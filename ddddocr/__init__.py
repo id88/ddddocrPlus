@@ -1,4 +1,5 @@
-# coding=utf-8
+# -*- coding: utf-8 -*-
+
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -30,7 +31,7 @@ class TypeError(Exception):
 
 class DdddOcr(object):
     def __init__(self, ocr: bool = True, det: bool = False, old: bool = False, beta: bool = False, use_gpu: bool = False,
-                 device_id: int = 0, show_ad=True, import_onnx_path: str = "", charsets_path: str = ""):
+                 device_id: int = 0, show_ad=False, import_onnx_path: str = "", charsets_path: str = ""):
         if show_ad:
             print("欢迎使用ddddocr，本项目专注带动行业内卷，个人博客:wenanzhe.com")
             print("训练数据支持来源于:http://146.56.204.113:19199/preview")
@@ -1460,20 +1461,37 @@ class DdddOcr(object):
 
     def preproc(self, img, input_size, swap=(2, 0, 1)):
         if len(img.shape) == 3:
+            # 数据类型为 uint8
+            # * 114 是将该矩阵中所有元素的值乘以 114，也就是 1*114 是黑色
             padded_img = np.ones((input_size[0], input_size[1], 3), dtype=np.uint8) * 114
+            '''
+            np.ones() 是 NumPy 库中的一个函数，用于创建指定形状、数据类型和元素都为 1 的数组。
+            通常用作创建全 1 数组作为初始化值或者在计算过程中需要用到占位符的情况下。
+            常用参数包括 shape（数组形状）、dtype（数据类型，默认是 float64） 和 order（返回数组的内存布局方式，默认是 C 风格）。
+            例如，np.ones((3, 4), dtype=np.int32) 将创建一个形状为 (3, 4) 也就是一个 3 行 4 列的二维数组、数据类型为 int32 并且所有元素都为 1 的二维数组。
+            '''
         else:
             padded_img = np.ones(input_size, dtype=np.uint8) * 114
 
+         # 计算原始图像需要缩放的比例 r
         r = min(input_size[0] / img.shape[0], input_size[1] / img.shape[1])
-        resized_img = cv2.resize(
+
+        resized_img = cv2.resize( # 使用 OpenCV 库中的 resize() 函数对输入图像 img 进行缩放操作
             img,
-            (int(img.shape[1] * r), int(img.shape[0] * r)),
-            interpolation=cv2.INTER_LINEAR,
-        ).astype(np.uint8)
+            (int(img.shape[1] * r), int(img.shape[0] * r)),  # 进行修改
+            interpolation=cv2.INTER_LINEAR, # 使用的插值方法为 cv2.INTER_LINEAR（双线性插值）
+        ).astype(np.uint8) # 由于 cv2.resize() 返回的数据类型是 float32，因此通过 .astype(np.uint8) 将图像的数据类型转换为 uint8 类型，以便后续处理。
+
+         # 将缩放后的图像放入填充图像中，使其居中并保持纵横比不变
         padded_img[: int(img.shape[0] * r), : int(img.shape[1] * r)] = resized_img
 
+        # 将 padded_img 的通道维度换到前面（默认是在最后）
+        # swap 可以是一个元组或列表，其中包含了通道维度的索引顺序。例如，swap=(2, 0, 1) 表示将 paddled_img 的第三维度（即 RGB 通道）移动到第一维，其他两个维度保持不变。
         padded_img = padded_img.transpose(swap)
+        # 将 padded_img 转换为 float32 类型的数组，并确保其在内存中的连续性，以提高后续计算效率。ascontiguousarray() 会返回修改后的数组，而不是原地修改 padded_img。
         padded_img = np.ascontiguousarray(padded_img, dtype=np.float32)
+
+        # 返回填充后的图像数据和缩放比例 r
         return padded_img, r
 
     def demo_postprocess(self, outputs, img_size, p6=False):
@@ -1553,16 +1571,25 @@ class DdddOcr(object):
         """Multiclass NMS implemented in Numpy"""
         return self.multiclass_nms_class_agnostic(boxes, scores, nms_thr, score_thr)
 
+
+    # 每个字符所在的矩形框坐标（左上角和右下角坐标）
     def get_bbox(self, image_bytes):
+        # 将图像字节数据转换为 OpenCV 的 BGR 格式
         img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
 
+        # 将图像预处理为模型所需的输入大小和格式，并计算缩放比例
         im, ratio = self.preproc(img, (416, 416))
+
+         # 利用 ONNX Runtime 运行推理，获取输出结果
         ort_inputs = {self.__ort_session.get_inputs()[0].name: im[None, :, :, :]}
         output = self.__ort_session.run(None, ort_inputs)
-        predictions = self.demo_postprocess(output[0], (416, 416))[0]
-        boxes = predictions[:, :4]
-        scores = predictions[:, 4:5] * predictions[:, 5:]
 
+        # 对推理结果进行后处理，得到包含预测框和置信度的信息
+        predictions = self.demo_postprocess(output[0], (416, 416))[0]
+        boxes = predictions[:, :4] # 提取预测框坐标信息
+        scores = predictions[:, 4:5] * predictions[:, 5:] # 计算预测框置信度
+
+        # 将预测框从中心点表示方式（x,y,w,h）转换成左上角和右下角坐标表示方式（x1,y1,x2,y2）
         boxes_xyxy = np.ones_like(boxes)
         boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2.
         boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2.
@@ -1570,11 +1597,13 @@ class DdddOcr(object):
         boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2.
         boxes_xyxy /= ratio
 
+        # 对预测框进行多类别非极大值抑制，得到最终的预测结果
         pred = self.multiclass_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.1)
         try:
             final_boxes = pred[:, :4].tolist()
             result = []
             for b in final_boxes:
+                # 将预测框坐标限制在图像范围内，并将浮点数转换为整型
                 if b[0] < 0:
                     x_min = 0
                 else:
@@ -1594,6 +1623,8 @@ class DdddOcr(object):
                 result.append([x_min, y_min, x_max, y_max])
         except Exception as e:
             return []
+        
+        # 返回最终的预测框列表
         return result
 
     def classification(self, img):
@@ -1601,6 +1632,7 @@ class DdddOcr(object):
             raise TypeError("当前识别类型为目标检测")
         if not isinstance(img, (bytes, str, pathlib.PurePath, Image.Image)):
             raise TypeError("未知图片类型")
+        
         if isinstance(img, bytes):
             image = Image.open(io.BytesIO(img))
         elif isinstance(img, Image.Image):
@@ -1610,22 +1642,45 @@ class DdddOcr(object):
         else:
             assert isinstance(img, pathlib.PurePath)
             image = Image.open(img)
+
+
+        '''
+        PIL.Image 中的 resize() 函数用于调整图像的尺寸大小，常用参数如下：
+        size：指定目标尺寸大小，可以是一个元组或列表分别表示目标宽度和高度，也可以只指定一个整数表示将目标大小调整为等比例缩放后的尺寸。
+        resample：指定插值方式，常见取值包括 Image.NEAREST（最近邻插值）、Image.BOX（box 插值）、Image.BILINEAR 和 Image.BICUBIC 等。其中，Image.NEAREST 采用最近邻插值，即在目标位置的最近像素处采样；Image.BOX 采用 box 插值，即在目标区域内均匀采样；Image.BILINEAR 则采用双线性插值方法；Image.BICUBIC 采用双三次插值方法。
+        Image.ANTIALIAS 表示使用 PIL 库自带的高质量重采样滤波器进行插值，一般来说效果较好。
+        此外还有一些可选参数，如 box=None（指定源图像的区域）、centering=None（指定是否对图像进行中心化）等
+        '''
+
         if not self.use_import_onnx:
-            image = image.resize((int(image.size[0] * (64 / image.size[1])), 64), Image.ANTIALIAS).convert('L')
+            # 调整大小
+            image = image.resize((int(image.size[0] * (64 / image.size[1])), 64), Image.ANTIALIAS)
+            # 转换为灰度图像
+            image = image.convert('L')
         else:
             if self.__resize[0] == -1:
-                if self.__word:
+                if self.__word: # 单字识别
                     image = image.resize((self.__resize[1], self.__resize[1]), Image.ANTIALIAS)
-                else:
+                else: # 文本行识别
                     image = image.resize((int(image.size[0] * (self.__resize[1] / image.size[1])), self.__resize[1]), Image.ANTIALIAS)
-            else:
+            else: 
                 image = image.resize((self.__resize[0], self.__resize[1]), Image.ANTIALIAS)
-            if self.__channel == 1:
-                image = image.convert('L')
+
+            if self.__channel == 1:  # 若当前模型为单通道
+                image = image.convert('L') # 将图像转换为灰度图像
             else:
+                # 将图像转换为 RGB 彩色图像
                 image = image.convert('RGB')
+
+         # 将 PIL.Image 对象转换成 NumPy 数组，并将数组的数据类型转换为 float32 类型，以适应模型输入所要求的数据类型。
         image = np.array(image).astype(np.float32)
+        # 对数组进行归一化处理以满足模型要求
         image = np.expand_dims(image, axis=0) / 255.
+        '''
+        np.expand_dims(image, axis=0) 的作用是将 input 张量在第 0 维（最前面）插入一个长度为 1 的新维度，从而将原本的形状 (height, width, channels) 转换为 (1, height, width, channels)。这样做的目的是为了将单张图像转换为批量图像的格式，以适应模型输入所要求的数据类型。
+        代码中除此之外还对图像进行了归一化处理，即 / 255. 操作。由于神经网络通常只接受数值范围在 [0, 1] 或 [-1, 1] 内的数据作为输入，因此需要将原始图像的像素值缩放到 [0, 1] 内。在这里，通过将每个像素值除以 255 实现了将像素值映射到 [0, 1] 范围内的操作。
+        '''
+
         if not self.use_import_onnx:
             image = (image - 0.5) / 0.5
         else:
@@ -1635,7 +1690,10 @@ class DdddOcr(object):
                 image = (image - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
                 image = image[0]
                 image = image.transpose((2, 0, 1))
+                # 将 image 的通道维度换到前面（默认是在最后）
+                # (2, 0, 1) 表示将 image 的第三维度（即 RGB 通道）移动到第一维，其他两个维度保持不变。
 
+        # 调用 ONNX 推理 API 进行识别
         ort_inputs = {'input1': np.array([image]).astype(np.float32)}
         ort_outs = self.__ort_session.run(None, ort_inputs)
         result = []
@@ -1663,23 +1721,34 @@ class DdddOcr(object):
         result = self.get_bbox(img_bytes)
         return result
 
+    # 识别出文本区域，并将该区域在图像中框出来并返回
     def get_target(self, img_bytes: bytes = None):
+        # 将图像字节数据转换为 PIL.Image 对象
         image = Image.open(io.BytesIO(img_bytes))
+
+        # 获取图像的宽度和高度
         w, h = image.size
+
+        # 初始化文本区域的左上和右下坐标
         starttx = 0
         startty = 0
         end_x = 0
         end_y = 0
+
+        # 遍历图像中的每个像素点，找到文本区域的左上和右下坐标
         for x in range(w):
             for y in range(h):
+                #  PIL.Image 对象的一个方法，用于获取给定坐标位置 (x,y) 处的像素值。该方法返回一个元组，其中包含了像素点的 RGB（如果是彩色图像）或灰度值（如果是黑白图像）以及 Alpha 值（如果存在）。
                 p = image.getpixel((x, y))
                 if p[-1] == 0:
+                    # 如果当前像素点是透明的，则表示进入文本区域
                     if startty != 0 and end_y == 0:
                         end_y = y
 
                     if starttx != 0 and end_x == 0:
                         end_x = x
                 else:
+                    # 如果当前像素点不透明，则表示离开文本区域
                     if startty == 0:
                         startty = y
                         end_y = 0
@@ -1687,10 +1756,14 @@ class DdddOcr(object):
                         if y < startty:
                             startty = y
                             end_y = 0
+            
+            # 如果还没有找到文本区域的左上坐标，则继续往下遍历，否则记录左上坐标，并寻找右下坐标
             if starttx == 0 and startty != 0:
                 starttx = x
             if end_y != 0:
                 end_x = x
+        
+        # 根据文本区域的左上和右下坐标，裁剪出文本区域，并返回该区域的图像数据及其左上坐标
         return image.crop([starttx, startty, end_x, end_y]), starttx, startty
 
     def slide_match(self, target_bytes: bytes = None, background_bytes: bytes = None, simple_target: bool=False, flag: bool=False):
